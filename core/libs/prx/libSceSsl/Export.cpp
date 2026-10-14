@@ -164,7 +164,17 @@ struct SslConnection {
     std::string host;
     SslVerifyCallback verifyCallback;
     void* verifyArgument;
+    std::uint32_t verifyOptions = 0;
+    int minimumVersion = 0;
+    std::string alpn;
 };
+
+constexpr std::uint32_t KNOWN_VERIFY_OPTIONS = 0x1 | 0x4 | 0x8 | 0x10 | 0x20 | 0x2000;
+constexpr int SSL_VERSION_TLS12 = 5;
+
+void RequireVerifyOptions(const char* function, std::uint32_t options) {
+    if ((options & ~KNOWN_VERIFY_OPTIONS) != 0) throw std::invalid_argument(std::string(function) + ": unknown verify option bits");
+}
 
 struct Runtime {
     std::mutex mutex;
@@ -434,6 +444,44 @@ int APS5_VABI sceSslSetVerifyCallback(int sslConnectionId, SslVerifyCallback cbf
     return 0;
 }
 
+int APS5_VABI sceSslEnableVerifyOption(int sslConnectionId, std::uint32_t option) {
+    std::lock_guard lock(State().mutex);
+    SslConnection& connection = RequireConnection(__func__, sslConnectionId);
+    RequireVerifyOptions(__func__, option);
+    connection.verifyOptions |= option;
+    return 0;
+}
+
+int APS5_VABI sceSslDisableVerifyOption(int sslConnectionId, std::uint32_t option) {
+    std::lock_guard lock(State().mutex);
+    SslConnection& connection = RequireConnection(__func__, sslConnectionId);
+    RequireVerifyOptions(__func__, option);
+    connection.verifyOptions &= ~option;
+    return 0;
+}
+
+int APS5_VABI sceSslSetMinSslVersion(int sslConnectionId, int version) {
+    std::lock_guard lock(State().mutex);
+    SslConnection& connection = RequireConnection(__func__, sslConnectionId);
+    if (version < 0 || version > SSL_VERSION_TLS12) throw std::invalid_argument(std::string(__func__) + ": unknown SSL version");
+    connection.minimumVersion = version;
+    return 0;
+}
+
+int APS5_VABI sceSslSetAlpn(int sslConnectionId, const char* proto) {
+    std::lock_guard lock(State().mutex);
+    SslConnection& connection = RequireConnection(__func__, sslConnectionId);
+    if (!proto) throw std::invalid_argument(std::string(__func__) + ": null protocol list");
+    connection.alpn = proto;
+    return 0;
+}
+
+const char* APS5_VABI sceSslGetAlpnSelected(int sslConnectionId) {
+    std::lock_guard lock(State().mutex);
+    RequireConnection(__func__, sslConnectionId);
+    return nullptr;
+}
+
 int APS5_VABI sceSslConnect(int sslConnectionId) {
     (void)sslConnectionId;
     NotImplemented_nid_no_patch(__func__);
@@ -473,26 +521,6 @@ int APS5_VABI sceSslFreeSslCertName(void) {
     return 0;
 }
 
-int APS5_VABI sceSslDisableVerifyOption(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslGetAlpnSelected(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslSetAlpn(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslSetMinSslVersion(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSslGetIssuerName(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -514,11 +542,6 @@ int APS5_VABI sceSslGetPem(void) {
 }
 
 int APS5_VABI sceSslGetSubjectName(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslEnableVerifyOption(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
