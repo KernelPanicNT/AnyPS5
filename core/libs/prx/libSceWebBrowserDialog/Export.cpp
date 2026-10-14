@@ -16,6 +16,13 @@ constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u
 constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
 constexpr int COMMON_DIALOG_ERROR_BUSY = static_cast<int>(0x80B80007u);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
+
+struct PredeterminedContentParam {
+    std::uint64_t size;
+    const char* domain[20];
+    std::uint8_t reserved[256];
+};
+static_assert(sizeof(PredeterminedContentParam) == 424);
 }
 
 extern "C" {
@@ -71,8 +78,15 @@ int APS5_VABI sceWebBrowserDialogSetCookie(void) {
     return 0;
 }
 
-int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent(const void* param, const void* contentParam) {
+    const int status = g_status.load();
+    if (status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+    if (status == COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_BUSY;
+    if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
+    if (contentParam == nullptr) throw std::invalid_argument("sceWebBrowserDialogOpenForPredeterminedContent: null predetermined content parameter");
+    if (static_cast<const PredeterminedContentParam*>(contentParam)->size != sizeof(PredeterminedContentParam))
+        throw std::invalid_argument("sceWebBrowserDialogOpenForPredeterminedContent: unexpected predetermined content parameter size");
+    g_status = COMMON_DIALOG_STATUS_FINISHED;
     return 0;
 }
 

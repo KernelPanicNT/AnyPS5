@@ -1,0 +1,5 @@
+# libSceWebBrowserDialog technical debt
+
+### Unknown function info
+
+- [sceWebBrowserDialogOpenForPredeterminedContent](../../../core/libs/prx/libSceWebBrowserDialog/Export.cpp) (libSceWebBrowserDialog) - the `(param, predeterminedContentParam)` signature and the 424-byte predetermined content parameter (a 64-bit size, 20 allowed domain pointers and 256 reserved bytes) follow SharpProspero's [parameter layout](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Dialog/WebBrowserDialog.cs#L138-L155) and [import](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Dialog/WebBrowserDialog.cs#L246-L254); the PS5 behaviour is unverified. It answers as `sceWebBrowserDialogOpen`: `NOT_INITIALIZED` before `sceWebBrowserDialogInitialize`, `BUSY` while running and `ARG_NULL` for a null dialog parameter, and otherwise finishes at once with the user-cancelled result, since there is no browser to show. A null predetermined content parameter or a size other than 424 throws, as its error code is unknown, and the allowed domains are not read
