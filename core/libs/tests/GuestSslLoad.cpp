@@ -23,6 +23,10 @@ int APS5_VABI sceSslFreeCaCerts(int, SceSsl::CaCerts*);
 int APS5_VABI sceSslCreateConnection(int, int, const char*);
 int APS5_VABI sceSslDeleteConnection(int);
 int APS5_VABI sceSslSetVerifyCallback(int, int (APS5_VABI *)(int, unsigned int, void**, int, void*), void*);
+void* APS5_VABI sceSslGetSubjectName(int, void*);
+void* APS5_VABI sceSslGetIssuerName(int, void*);
+int APS5_VABI sceSslGetNameEntryCount(int, void*);
+int APS5_VABI sceSslFreeSslCertName(int, void*);
 }
 
 namespace {
@@ -157,6 +161,45 @@ void ClientIdentity() {
     Check(sceSslTerm_nid_postfix(id) == 0, "identity term failed");
 }
 
+void CertificateNames() {
+    const int id = sceSslInit_nid_postfix(1024 * 1024);
+    const int other = sceSslInit_nid_postfix(1024 * 1024);
+    auto root = Data(RootPem);
+    auto client = Data(ClientPem);
+    SceSsl::Data* authorities[] = {&root, &client};
+    Check(sceSslLoadCert(id, 2, authorities, nullptr, nullptr) == 0, "CA load for names failed");
+    SceSsl::CaList list{};
+    Check(sceSslGetCaList(id, &list) == 0 && list.num == 2, "CA list for names failed");
+    void* rootCertificate = list.certs[0];
+    void* clientCertificate = list.certs[1];
+
+    void* rootSubject = sceSslGetSubjectName(id, rootCertificate);
+    void* rootIssuer = sceSslGetIssuerName(id, rootCertificate);
+    void* clientSubject = sceSslGetSubjectName(id, clientCertificate);
+    void* clientIssuer = sceSslGetIssuerName(id, clientCertificate);
+    Check(rootSubject && rootIssuer && clientSubject && clientIssuer, "name handle missing");
+    Check(rootSubject != rootIssuer && rootSubject != sceSslGetSubjectName(id, rootCertificate), "name handles are not distinct");
+    Check(sceSslGetNameEntryCount(id, rootSubject) == 3 && sceSslGetNameEntryCount(id, rootIssuer) == 3, "root name entry count");
+    Check(sceSslGetNameEntryCount(id, clientSubject) == 5, "client subject entry count with a multi-valued RDN");
+    Check(sceSslGetNameEntryCount(id, clientIssuer) == 3, "client issuer entry count");
+
+    Throws([&] { sceSslGetSubjectName(other, rootCertificate); });
+    Throws([&] { sceSslGetIssuerName(id, &list); });
+    Throws([&] { sceSslGetNameEntryCount(other, rootSubject); });
+    Throws([&] { sceSslGetNameEntryCount(id, rootCertificate); });
+    Throws([&] { sceSslFreeSslCertName(other, rootSubject); });
+
+    Check(sceSslFreeSslCertName(id, rootIssuer) == 0, "free issuer name failed");
+    Throws([&] { sceSslFreeSslCertName(id, rootIssuer); });
+    Throws([&] { sceSslGetNameEntryCount(id, rootIssuer); });
+
+    Check(sceSslFreeCaList(id, &list) == 0 && sceSslUnloadCert(id) == 0, "release of the CA list failed");
+    Throws([&] { sceSslGetSubjectName(id, clientCertificate); });
+    Check(sceSslGetNameEntryCount(id, clientSubject) == 5, "a held name outlives the unloaded certificate");
+    for (void* name : {rootSubject, clientSubject, clientIssuer}) Check(sceSslFreeSslCertName(id, name) == 0, "free name failed");
+    Check(sceSslTerm_nid_postfix(other) == 0 && sceSslTerm_nid_postfix(id) == 0, "names term failed");
+}
+
 }
 
 int main() {
@@ -164,6 +207,7 @@ int main() {
         Lifecycle();
         AtomicFailures();
         ClientIdentity();
+        CertificateNames();
         ConnectionLifetime();
         std::vector<std::thread> workers;
         for (int i = 0; i < 3; ++i) workers.emplace_back([] { for (int n = 0; n < 4; ++n) Lifecycle(); });

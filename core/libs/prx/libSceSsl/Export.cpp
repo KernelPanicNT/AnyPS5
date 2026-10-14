@@ -113,6 +113,11 @@ struct CertificateChain {
     ~CertificateChain() { mbedtls_x509_crt_free(&root); }
 };
 
+struct CertificateName {
+    std::shared_ptr<CertificateChain> owner;
+    const mbedtls_x509_name* name;
+};
+
 struct PrivateKey {
     mbedtls_pk_context key;
     PrivateKey() { mbedtls_pk_init(&key); }
@@ -151,6 +156,7 @@ struct Context {
     std::vector<std::shared_ptr<CertificateChain>> authorities;
     std::shared_ptr<Identity> identity;
     std::vector<std::unique_ptr<CertificateHandle>> certificateHandles;
+    std::unordered_map<void*, std::unique_ptr<CertificateName>> certificateNames;
     std::unordered_map<void*, Snapshot> caLists;
     std::unordered_map<void*, Snapshot> caCerts;
     explicit Context(std::size_t size) : pool{size} {}
@@ -185,6 +191,44 @@ Runtime& State() {
 Context& GetContext(int handle) {
     const auto found = State().contexts.find(handle);
     if (found == State().contexts.end()) throw std::invalid_argument("Invalid SSL context");
+    return *found->second;
+}
+
+bool CertificateChainHeld(const Context& context, const CertificateChain* chain) {
+    for (const auto& authority : context.authorities) {
+        if (authority.get() == chain) return true;
+    }
+    for (const auto& [pointers, snapshot] : context.caLists) {
+        for (const auto& certificate : snapshot.certificates) {
+            if (certificate.get() == chain) return true;
+        }
+    }
+    return false;
+}
+
+const CertificateHandle& RequireCertificate(const char* function, const Context& context, const void* certificate) {
+    for (const auto& handle : context.certificateHandles) {
+        if (handle.get() != certificate) continue;
+        const auto owner = handle->owner.lock();
+        if (!owner || !CertificateChainHeld(context, owner.get())) throw std::invalid_argument(std::string(function) + ": the certificate was released");
+        return *handle;
+    }
+    throw std::invalid_argument(std::string(function) + ": not a certificate of this context");
+}
+
+void* ReferCertificateName(const char* function, int sslCtxId, const void* certificate, bool subject) {
+    std::lock_guard lock(State().mutex);
+    auto& context = GetContext(sslCtxId);
+    const CertificateHandle& handle = RequireCertificate(function, context, certificate);
+    auto name = std::make_unique<CertificateName>(CertificateName{handle.owner.lock(), subject ? &handle.certificate->subject : &handle.certificate->issuer});
+    void* key = name.get();
+    context.certificateNames.emplace(key, std::move(name));
+    return key;
+}
+
+CertificateName& RequireCertificateName(const char* function, Context& context, void* certificateName) {
+    const auto found = context.certificateNames.find(certificateName);
+    if (found == context.certificateNames.end()) throw std::invalid_argument(std::string(function) + ": not a certificate name of this context");
     return *found->second;
 }
 
@@ -468,8 +512,11 @@ int APS5_VABI sceSslGetSerialNumber() {
  return 0;
 }
 
-int APS5_VABI sceSslFreeSslCertName(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslFreeSslCertName(int sslCtxId, void* certName) {
+    std::lock_guard lock(State().mutex);
+    auto& context = GetContext(sslCtxId);
+    RequireCertificateName(__func__, context, certName);
+    context.certificateNames.erase(certName);
     return 0;
 }
 
@@ -493,14 +540,19 @@ int APS5_VABI sceSslSetMinSslVersion(void) {
     return 0;
 }
 
-int APS5_VABI sceSslGetIssuerName(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void* APS5_VABI sceSslGetIssuerName(int sslCtxId, void* sslCert) {
+    return ReferCertificateName(__func__, sslCtxId, sslCert, false);
 }
 
-int APS5_VABI sceSslGetNameEntryCount(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceSslGetNameEntryCount(int sslCtxId, void* certName) {
+    std::lock_guard lock(State().mutex);
+    auto& context = GetContext(sslCtxId);
+    const CertificateName& name = RequireCertificateName(__func__, context, certName);
+    int count = 0;
+    for (const mbedtls_x509_name* entry = name.name; entry; entry = entry->next) {
+        if (entry->oid.p) ++count;
+    }
+    return count;
 }
 
 int APS5_VABI sceSslGetNameEntryInfo(void) {
@@ -513,9 +565,8 @@ int APS5_VABI sceSslGetPem(void) {
     return 0;
 }
 
-int APS5_VABI sceSslGetSubjectName(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void* APS5_VABI sceSslGetSubjectName(int sslCtxId, void* sslCert) {
+    return ReferCertificateName(__func__, sslCtxId, sslCert, true);
 }
 
 int APS5_VABI sceSslEnableVerifyOption(void) {
