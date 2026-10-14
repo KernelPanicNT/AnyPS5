@@ -30,6 +30,7 @@ extern const std::uint8_t in6addr_any_nid_postfix[16];
 extern const std::uint8_t in6addr_loopback_nid_postfix[16];
 int APS5_VABI sceNetInit_nid_postfix(void);
 int APS5_VABI sceNetShowNetstatWithMemory(int);
+int APS5_VABI sceNetShowNetstat(void);
 int APS5_VABI sceNetSocket(const char*, int, int, int);
 int APS5_VABI sceNetBind_nid_postfix(int, const void*, std::uint32_t);
 int APS5_VABI sceNetListen(int, int);
@@ -174,7 +175,8 @@ static void CheckStreamSender(int family) {
     for (const int descriptor : {client, accepted, listener}) Require(sceNetSocketClose(descriptor) == 0);
 }
 
-static std::string CaptureNetstat(int pool) {
+template <typename TShow>
+static std::string CaptureOutput(TShow show) {
     auto* file = std::tmpfile();
     Require(file != nullptr);
     Require(std::fflush(stdout) == 0);
@@ -187,7 +189,7 @@ static std::string CaptureNetstat(int pool) {
     const int saved = dup(output);
     Require(saved >= 0 && dup2(fileno(file), output) == output);
 #endif
-    const int result = sceNetShowNetstatWithMemory(pool);
+    const int result = show();
     Require(std::fflush(stdout) == 0);
 #ifdef _WIN32
     Require(_dup2(saved, output) == 0 && _close(saved) == 0);
@@ -202,12 +204,22 @@ static std::string CaptureNetstat(int pool) {
     return text;
 }
 
+static std::string CaptureNetstat(int pool) {
+    return CaptureOutput([pool] { return sceNetShowNetstatWithMemory(pool); });
+}
+
+static std::string CaptureNetstat() {
+    return CaptureOutput([] { return sceNetShowNetstat(); });
+}
+
 static void CheckNetstat() {
     Require(Failed(sceNetShowNetstatWithMemory(-1), 9));
     const int pool = sceNetPoolCreate("netstat", 4096, 0);
     Require(pool > 0);
     const auto empty = CaptureNetstat(pool);
     Require(empty.find("bytes=4096 sockets=0") != std::string::npos);
+    const auto emptyAll = CaptureNetstat();
+    Require(emptyAll == "sceNet netstat: sockets=0\n");
     const int socket = sceNetSocket("netstat", 2, 1, 0);
     Require(socket >= 0);
     const int nonblocking = 1;
@@ -221,11 +233,14 @@ static void CheckNetstat() {
     const auto snapshot = CaptureNetstat(pool);
     Require(snapshot.find("bytes=4096 sockets=1") != std::string::npos);
     Require(snapshot.find("socket=" + std::to_string(socket) + " family=2 type=1 nonblock=1 bound=1 listening=1") != std::string::npos);
+    const auto snapshotAll = CaptureNetstat();
+    Require(snapshotAll == "sceNet netstat: sockets=1\nsocket=" + std::to_string(socket) + " family=2 type=1 nonblock=1 bound=1 listening=1\n");
     Require(sceNetGetsockname(socket, address.data(), &size) == 0 && address == before);
     Require(sceNetSocketClose(socket) == 0);
     Require(CaptureNetstat(pool).find("sockets=0") != std::string::npos);
     Require(sceNetPoolDestroy(pool) == 0);
     Require(Failed(sceNetShowNetstatWithMemory(pool), 9));
+    Require(CaptureNetstat() == "sceNet netstat: sockets=0\n");
 }
 
 static void CheckPoolStats() {

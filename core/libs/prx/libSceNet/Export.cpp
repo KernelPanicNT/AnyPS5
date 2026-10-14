@@ -500,11 +500,6 @@ int* APS5_VABI sceNetErrnoLoc(void) {
     return errno_slot();
 }
 
-int APS5_VABI sceNetShowNetstat(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int PollSockets(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
     std::vector<std::shared_ptr<NativeSocketHandle>> natives(static_cast<std::size_t>(count));
     {
@@ -1138,22 +1133,44 @@ int APS5_VABI sceNetEpollCreate(const char* name, int flags) {
     return id;
 }
 
+struct NetstatSocket { int id; int family; int type; bool nonblock; bool bound; bool listening; };
+
+static std::vector<NetstatSocket> CollectNetstatSockets() {
+    std::vector<NetstatSocket> sockets;
+    sockets.reserve(g_socks.size());
+    for (const auto& [id, socket] : g_socks)
+        sockets.push_back({id, socket.family, socket.type, socket.nonblock, socket.bound, socket.listening});
+    return sockets;
+}
+
+static void PrintNetstatSockets(const std::vector<NetstatSocket>& sockets) {
+    for (const auto& socket : sockets)
+        std::fprintf(stdout, "socket=%d family=%d type=%d nonblock=%d bound=%d listening=%d\n", socket.id, socket.family, socket.type, int(socket.nonblock), int(socket.bound), int(socket.listening));
+}
+
 int APS5_VABI sceNetShowNetstatWithMemory(int memid) {
-    struct SocketStatus { int id; int family; int type; bool nonblock; bool bound; bool listening; };
-    std::vector<SocketStatus> sockets;
+    std::vector<NetstatSocket> sockets;
     std::size_t poolSize = 0;
     {
         std::lock_guard lk(g_mutex);
         const auto pool = g_pools.find(memid);
         if (pool == g_pools.end()) return fail(NET_EBADF);
         poolSize = pool->second;
-        sockets.reserve(g_socks.size());
-        for (const auto& [id, socket] : g_socks)
-            sockets.push_back({id, socket.family, socket.type, socket.nonblock, socket.bound, socket.listening});
+        sockets = CollectNetstatSockets();
     }
     std::fprintf(stdout, "sceNet netstat: pool=%d bytes=%zu sockets=%zu\n", memid, poolSize, sockets.size());
-    for (const auto& socket : sockets)
-        std::fprintf(stdout, "socket=%d family=%d type=%d nonblock=%d bound=%d listening=%d\n", socket.id, socket.family, socket.type, int(socket.nonblock), int(socket.bound), int(socket.listening));
+    PrintNetstatSockets(sockets);
+    return 0;
+}
+
+int APS5_VABI sceNetShowNetstat(void) {
+    std::vector<NetstatSocket> sockets;
+    {
+        std::lock_guard lk(g_mutex);
+        sockets = CollectNetstatSockets();
+    }
+    std::fprintf(stdout, "sceNet netstat: sockets=%zu\n", sockets.size());
+    PrintNetstatSockets(sockets);
     return 0;
 }
 
