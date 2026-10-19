@@ -16,8 +16,12 @@
 #include "Ngs2Internal.hpp"
 
 static constexpr std::uint16_t WAVE_FORMAT_PCM = 0x1;
+static constexpr std::uint16_t WAVE_FORMAT_IEEE_FLOAT = 0x3;
 static constexpr std::uint16_t WAVE_FORMAT_EXTENSIBLE = 0xfffe;
 static constexpr std::uint8_t ATRAC9_GUID[16] = {0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36, 0x8d, 0x4d, 0x88, 0xfc, 0x61, 0x65, 0x4f, 0x8c, 0x83, 0x6c};
+static constexpr std::uint8_t PCM_GUID[16] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+static constexpr std::uint8_t TYPE_43_GUID[16] = {0x1c, 0xe0, 0x10, 0x9e, 0xcc, 0x8b, 0xd9, 0x47, 0x8f, 0x3b, 0xe3, 0x0b, 0x8b, 0xdc, 0x35, 0x29};
+static constexpr std::size_t FMT_EXTENSIBLE_SIZE = 40;
 static constexpr std::size_t FMT_ATRAC9_SIZE = 52;
 static constexpr std::size_t FMT_GUID_OFFSET = 24;
 static constexpr std::size_t FMT_CONFIG_OFFSET = 44;
@@ -366,18 +370,28 @@ static int ParsePcmLoop(const RiffChunks& chunks, Ngs2WaveformInfo& info) {
     return SCE_NGS2_OK;
 }
 
-static int ParsePcm16(const RiffChunks& chunks, std::size_t size, Ngs2WaveformInfo& info) {
+static std::uint32_t PcmType(std::uint16_t tag, std::uint32_t bits) {
+    if (tag == WAVE_FORMAT_IEEE_FLOAT) return bits == 32 ? 0x18 : bits == 64 ? 0x1a : 0;
+    switch (bits) {
+    case 8: return 0x11;
+    case 16: return 0x12;
+    case 24: return 0x14;
+    case 32: return 0x16;
+    default: return 0;
+    }
+}
+
+static int ParsePcm(const RiffChunks& chunks, std::size_t size, std::uint32_t type, Ngs2WaveformInfo& info) {
     const auto* format = chunks.format;
-    if (chunks.formatSize < 16) return SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
     const std::uint32_t channels = ReadLe16(format + 2);
     const std::uint32_t sampleRate = ReadLe32(format + 4);
-    const std::uint32_t bytesPerFrame = channels * sizeof(std::int16_t);
-    if (ReadLe16(format + 14) != 16 || channels == 0 || channels > NGS2_MAX_CHANNELS || sampleRate == 0 || sampleRate > MAX_SAMPLE_RATE || ReadLe16(format + 12) != bytesPerFrame) {
+    const std::uint32_t bytesPerFrame = channels * PCM_BYTES_PER_SAMPLE[type - WAVEFORM_TYPE_PCM_FIRST];
+    if (channels == 0 || channels > NGS2_MAX_CHANNELS || sampleRate == 0 || sampleRate > MAX_SAMPLE_RATE || ReadLe16(format + 12) != bytesPerFrame) {
         return SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
     }
     if (chunks.dataSize > size - chunks.dataOffset || chunks.dataSize % bytesPerFrame != 0) return SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA;
     const std::size_t dataSize = chunks.dataSize;
-    info.format = {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, channels, sampleRate, 0, 0, 0};
+    info.format = {type, channels, sampleRate, 0, 0, 0};
     info.data_offset = static_cast<std::uint32_t>(chunks.dataOffset);
     info.data_size = static_cast<std::uint32_t>(dataSize);
     info.num_samples = static_cast<std::uint32_t>(dataSize / bytesPerFrame);
@@ -396,12 +410,21 @@ static int ParsePcm16(const RiffChunks& chunks, std::size_t size, Ngs2WaveformIn
 static int ParseWaveform(const RiffChunks& chunks, std::size_t size, Ngs2WaveformInfo& info) {
     if (chunks.formatSize < 2) return SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
     const std::uint16_t tag = ReadLe16(chunks.format);
-    if (tag == WAVE_FORMAT_EXTENSIBLE && chunks.formatSize >= FMT_GUID_OFFSET + sizeof(ATRAC9_GUID) &&
-        std::memcmp(chunks.format + FMT_GUID_OFFSET, ATRAC9_GUID, sizeof(ATRAC9_GUID)) == 0) {
-        return ParseAtrac9(chunks, info);
+    if (tag == WAVE_FORMAT_EXTENSIBLE) {
+        if (chunks.formatSize < FMT_EXTENSIBLE_SIZE) return SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+        const auto* guid = chunks.format + FMT_GUID_OFFSET;
+        if (std::memcmp(guid, PCM_GUID, sizeof(PCM_GUID)) != 0) {
+            if (std::memcmp(guid, ATRAC9_GUID, sizeof(ATRAC9_GUID)) == 0 || chunks.formatSize == FMT_ATRAC9_SIZE) return ParseAtrac9(chunks, info);
+            if (std::memcmp(guid, TYPE_43_GUID, sizeof(TYPE_43_GUID)) == 0) throw std::runtime_error("NGS2: parsing waveforms of type 0x43 is not implemented");
+            return SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+        }
+    } else if (tag != WAVE_FORMAT_PCM && tag != WAVE_FORMAT_IEEE_FLOAT) {
+        return SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
     }
-    if (tag == WAVE_FORMAT_PCM) return ParsePcm16(chunks, size, info);
-    throw std::runtime_error("NGS2: parsing waveform format tag " + Ngs2Hex(tag) + " is not implemented");
+    if (chunks.formatSize < 16) return SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    const auto type = PcmType(tag, ReadLe16(chunks.format + 14));
+    if (type == 0) return SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+    return ParsePcm(chunks, size, type, info);
 }
 
 #pragma GCC visibility push(default)
