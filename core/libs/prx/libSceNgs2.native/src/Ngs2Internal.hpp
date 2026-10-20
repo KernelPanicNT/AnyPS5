@@ -229,7 +229,7 @@ std::size_t Ngs2Atrac9BlockBytes(const Ngs2Voice& voice, const Ngs2WaveformBlock
 void Ngs2RestartAtrac9(Ngs2Voice& voice);
 void Ngs2ConsumeAtrac9(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate);
 bool Ngs2FinishBlock(Ngs2Voice& voice);
-void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option);
+int Ngs2CheckCustomRack(const Ngs2CustomRackOption& option, std::uint32_t maxInputs);
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option);
 void Ngs2CleanupUserFx(Ngs2Rack& rack);
 void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param);

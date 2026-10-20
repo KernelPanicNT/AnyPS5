@@ -12,28 +12,71 @@
 static constexpr std::uint32_t USER_FX2_FLAG_FIRST_PROCESS = 1;
 static constexpr std::uint32_t USER_FX2_FLAG_PARAM_CHANGED = 2;
 
-void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option) {
-    if (option.num_buffers != 1) throw std::runtime_error("NGS2: custom racks with " + std::to_string(option.num_buffers) + " buffers are not implemented");
+static const char* BuiltInModuleName(std::uint32_t moduleId) {
+    switch (moduleId) {
+        case SCE_NGS2_CUSTOM_MODULE_ID_GAIN: return "Gain";
+        case SCE_NGS2_CUSTOM_MODULE_ID_REVERB: return "Reverb";
+        case SCE_NGS2_CUSTOM_MODULE_ID_PITCH_SHIFT: return "PitchShift";
+        case SCE_NGS2_CUSTOM_MODULE_ID_CONVOLUTION: return "Convolution";
+        default: return nullptr;
+    }
+}
+
+static std::uint32_t OptionWord(const Ngs2CustomModuleOption& option) {
+    std::uint32_t word = 0;
+    std::memcpy(&word, reinterpret_cast<const std::uint8_t*>(&option) + sizeof(option), sizeof(word));
+    return word;
+}
+
+static int CheckBuiltInModule(const Ngs2CustomRackModuleInfo& info) {
+    const auto stateSizeIs = [&info](std::uint32_t size) { return info.state_size == 0 || info.state_size == size; };
+    if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_GAIN) {
+        if (!stateSizeIs(0)) return SCE_NGS2_ERROR_INVALID_STATE_SIZE;
+    } else if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_REVERB) {
+        if (!stateSizeIs(0)) return SCE_NGS2_ERROR_INVALID_STATE_SIZE;
+        if (info.option != nullptr && info.option->size != SCE_NGS2_CUSTOM_REVERB_OPTION_SIZE) return SCE_NGS2_ERROR_INVALID_OPTION_SIZE;
+        if (info.option != nullptr && OptionWord(*info.option) > 1) return SCE_NGS2_ERROR_INVALID_REVERB_OPTION;
+    } else if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_PITCH_SHIFT) {
+        if (!stateSizeIs(SCE_NGS2_CUSTOM_PITCH_SHIFT_STATE_SIZE)) return SCE_NGS2_ERROR_INVALID_STATE_SIZE;
+        if (info.option != nullptr && info.option->size == SCE_NGS2_CUSTOM_PITCH_SHIFT_OPTION_SIZE && OptionWord(*info.option) != 0) {
+            return SCE_NGS2_ERROR_INVALID_PITCH_SHIFT_OPTION;
+        }
+    }
+    return SCE_NGS2_OK;
+}
+
+int Ngs2CheckCustomRack(const Ngs2CustomRackOption& option, std::uint32_t maxInputs) {
+    if (option.num_buffers == 0 || option.num_buffers > SCE_NGS2_CUSTOM_MAX_BUFFERS || option.num_buffers < maxInputs) {
+        return SCE_NGS2_ERROR_INVALID_NUM_BUFFERS;
+    }
     if (option.num_modules > SCE_NGS2_CUSTOM_MAX_MODULES || option.rack_option.max_ports > SCE_NGS2_CUSTOM_MAX_PORTS) APS5_INVALID_ARG_EX;
     for (std::uint32_t m = 0; m < option.num_modules; m++) {
         const auto& info = option.module[m];
         if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
             if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomUserFx2ModuleOption)) APS5_INVALID_ARG_EX;
-            if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
             if (reinterpret_cast<const Ngs2CustomUserFx2ModuleOption*>(info.option)->process_handler == nullptr) APS5_INVALID_ARG_EX;
         } else if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_FILTER) {
             if (info.option != nullptr || info.state_size != 0 || info.state_offset != 0) APS5_INVALID_ARG_EX;
-            if (info.source_buffer_id != 0 || info.extra_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
         } else if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX) {
-            if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
             if (info.option != nullptr && info.option->size < sizeof(Ngs2CustomModuleOption)) APS5_INVALID_ARG_EX;
-        } else {
+        } else if (BuiltInModuleName(info.module_id) == nullptr) {
             throw std::runtime_error("NGS2: custom module id " + Ngs2Hex(info.module_id) + " is not implemented");
         }
+        if (info.source_buffer_id >= option.num_buffers || info.extra_buffer_id >= option.num_buffers || info.dest_buffer_id >= option.num_buffers) {
+            return SCE_NGS2_ERROR_INVALID_BUFFER_INDEX;
+        }
+        const int result = CheckBuiltInModule(info);
+        if (result != SCE_NGS2_OK) return result;
+    }
+    if (option.num_buffers != 1) throw std::runtime_error("NGS2: custom racks with " + std::to_string(option.num_buffers) + " buffers are not implemented");
+    for (std::uint32_t m = 0; m < option.num_modules; m++) {
+        const char* name = BuiltInModuleName(option.module[m].module_id);
+        if (name != nullptr) throw std::runtime_error(std::string("NGS2: the custom ") + name + " module is not implemented");
     }
     for (std::uint32_t p = 0; p < option.rack_option.max_ports; p++) {
         if (option.port[p].source_buffer_id != 0) APS5_INVALID_ARG_EX;
     }
+    return SCE_NGS2_OK;
 }
 
 static Ngs2UserFx2SetupContext UserFxContext(Ngs2Rack& rack, std::size_t module, std::uint32_t voiceIndex) {
