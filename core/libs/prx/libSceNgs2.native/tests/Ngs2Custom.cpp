@@ -1,5 +1,6 @@
 #include "Ngs2Test.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -434,8 +435,14 @@ static void TestCustomRackChecks() {
     option.max_channels = SCE_NGS2_CUSTOM_SUBMIXER_MAX_CHANNELS;
     Require(CreateThrows<std::runtime_error>(option));
 
-    Require(CreateThrows<std::runtime_error>(BuiltInRackOption(userFx2, SCE_NGS2_CUSTOM_MODULE_ID_GAIN, nullptr, 0)));
+    const auto gain = BuiltInRackOption(userFx2, SCE_NGS2_CUSTOM_MODULE_ID_GAIN, nullptr, 0);
+    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER, &gain.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
     Require(create(BuiltInRackOption(userFx2, SCE_NGS2_CUSTOM_MODULE_ID_GAIN, nullptr, 4)) == SCE_NGS2_ERROR_INVALID_STATE_SIZE);
+    const ModuleOptionWords gainOption{sizeof(ModuleOptionWords), {}};
+    Require(CreateThrows<std::runtime_error>(BuiltInRackOption(userFx2, SCE_NGS2_CUSTOM_MODULE_ID_GAIN, &gainOption, 0)));
+    option = gain;
+    option.custom_rack_option.num_buffers = 2;
+    Require(CreateThrows<std::runtime_error>(option));
 
     const ModuleOptionWords reverb{SCE_NGS2_CUSTOM_REVERB_OPTION_SIZE, {1}};
     const ModuleOptionWords reverbOff{SCE_NGS2_CUSTOM_REVERB_OPTION_SIZE, {0}};
@@ -496,6 +503,121 @@ static void TestCustomRackChecks() {
     Require(rack == 0);
     sampler.custom_rack_option.module[0].extra_buffer_id = 0;
     Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &sampler.custom_rack_option.rack_option, &info, &rack) == SCE_NGS2_OK);
+    sampler.custom_rack_option.num_modules = 2;
+    sampler.custom_rack_option.module[1] = sampler.custom_rack_option.module[0];
+    sampler.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_GAIN;
+    Require(CreateSamplerThrows<std::runtime_error>(sampler));
+    sampler.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
+    sampler.custom_rack_option.module[1].module_id = SCE_NGS2_CUSTOM_MODULE_ID_GAIN;
+    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &sampler.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
+static Ngs2CustomVoiceGainParam GainParam(float left, float right) {
+    Ngs2CustomVoiceGainParam param{};
+    param.gain[0] = left;
+    param.gain[1] = right;
+    return param;
+}
+
+static void TestCustomGain() {
+    calls = {};
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 2);
+    const auto offset = Module(Offset);
+    auto option = RackOption(&offset, 1);
+    option.custom_rack_option.num_modules = 2;
+    option.custom_rack_option.module[1].module_id = SCE_NGS2_CUSTOM_MODULE_ID_GAIN;
+    const auto custom = Voice(CustomRack(system, option));
+    Control(custom, SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP, Ngs2CustomSubmixerVoiceSetupParam{{}, 2, 2, 0, 0});
+    Patch(custom, master);
+    Event(custom, SCE_NGS2_VOICE_EVENT_PLAY);
+    const std::vector<std::int16_t> pcm(Grain * 2 * 16, 16384);
+    const auto sampler = Sampler(system, pcm);
+    Patch(sampler, custom);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+
+    auto out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.0f && out[i * 2 + 1] == 0.0f);
+
+    Control(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(2.0f, 2.0f));
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) {
+        const float ramp = 2.0f * static_cast<float>(i) / static_cast<float>(Grain);
+        Require(out[i * 2] == 0.5f * ramp && out[i * 2 + 1] == 0.75f * ramp);
+    }
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 1.0f && out[i * 2 + 1] == 1.5f);
+
+    Control(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(1.0f, 1.0f));
+    Render(system);
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.75f);
+
+    Control(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(-0.5f, 4.0f));
+    Render(system);
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == -0.25f && out[i * 2 + 1] == 3.0f);
+
+    Control(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(SCE_NGS2_CUSTOM_GAIN_MAX, -SCE_NGS2_CUSTOM_GAIN_MAX));
+    Require(ControlThrows<std::runtime_error>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(32.5f, 0.0f)));
+    Require(ControlThrows<std::runtime_error>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(0.0f, -33.0f)));
+    Require(ControlThrows<std::runtime_error>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(std::nanf(""), 0.0f)));
+    auto last = GainParam(1.0f, 1.0f);
+    last.gain[SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS - 1] = 40.0f;
+    Require(ControlThrows<std::runtime_error>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, last));
+    Render(system);
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 16.0f && out[i * 2 + 1] == -24.0f);
+
+    struct ShortGainParam {
+        Ngs2VoiceParamHeader header;
+        float gain[SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS - 1];
+    };
+    Require(ControlThrows<std::invalid_argument>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, ShortGainParam{}));
+    Require(ControlThrows<std::invalid_argument>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 0, GainParam(1.0f, 1.0f)));
+    Require(ControlThrows<std::invalid_argument>(custom, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 2, GainParam(1.0f, 1.0f)));
+    Require(ControlThrows<std::runtime_error>(sampler, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(1.0f, 1.0f)));
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
+static void TestCustomSamplerGain() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 2);
+    Ngs2CustomSamplerRackOption option{};
+    option.custom_rack_option.rack_option.size = sizeof(option);
+    option.custom_rack_option.rack_option.max_grain_samples = 512;
+    option.custom_rack_option.rack_option.max_voices = 1;
+    option.custom_rack_option.rack_option.max_matrices = 1;
+    option.custom_rack_option.rack_option.max_ports = 1;
+    option.custom_rack_option.num_buffers = 1;
+    option.custom_rack_option.num_modules = 1;
+    option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_GAIN;
+    option.max_channel_works = 1;
+    Ngs2ContextBufferInfo query{};
+    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
+    const auto info = Buffer(query);
+    uintptr_t rack = 0;
+    Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &info, &rack) == SCE_NGS2_OK);
+
+    const auto voice = Voice(rack);
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 2, 48000, 0, 0, 0}});
+    const std::vector<std::int16_t> pcm(Grain * 2 * 4, 16384);
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, static_cast<std::uint32_t>(pcm.size() / 2), 0, 0};
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+    Patch(voice, master);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+
+    Require(ControlThrows<std::invalid_argument>(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 0, GainParam(1.0f, 0.5f)));
+    Require(ControlThrows<std::invalid_argument>(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 2, GainParam(1.0f, 0.5f)));
+    Control(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN | 1, GainParam(1.0f, 0.5f));
+    auto out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) {
+        const float step = static_cast<float>(i) / static_cast<float>(Grain);
+        Require(out[i * 2] == 0.5f * step && out[i * 2 + 1] == 0.5f * (0.5f * step));
+    }
+    out = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.25f);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -617,5 +739,7 @@ int main() {
     TestCustomSampler();
     TestCustomFilter();
     TestCustomLegacyUserFx();
+    TestCustomGain();
+    TestCustomSamplerGain();
     return 0;
 }

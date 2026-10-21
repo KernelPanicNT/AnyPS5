@@ -108,6 +108,11 @@ struct Ngs2VoiceCustomUserFx {
     std::uint32_t flags = 0;
 };
 
+struct Ngs2CustomGain {
+    std::array<float, SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS> gain{};
+    std::array<float, SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS> applied{};
+};
+
 struct Ngs2Voice {
     Ngs2Rack* rack = nullptr;
     Ngs2PlayState state = Ngs2PlayState::Empty;
@@ -136,6 +141,7 @@ struct Ngs2Voice {
     float lfeLevel = 1.0f;
     std::vector<Ngs2UserFx2> userFx;
     std::vector<Ngs2VoiceCustomUserFx> customUserFx;
+    std::vector<Ngs2CustomGain> customGain;
     Ngs2UserFxProcessHandler userFxHandler = nullptr;
     std::array<std::uintptr_t, 3> userFxData{};
     std::uint32_t userFxFlags = 0;

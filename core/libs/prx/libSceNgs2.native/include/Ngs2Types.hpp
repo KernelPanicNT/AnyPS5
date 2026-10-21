@@ -74,6 +74,7 @@ static constexpr std::uint32_t SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_EXIT_LOOP = 0
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH = 0x40010005;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP = 0x40020000;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER = 0x40001300;
+static constexpr std::uint32_t SCE_NGS2_CUSTOM_VOICE_PARAM_GAIN = 0x40001500;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX = 0x40001d00;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX2 = 0x40001f00;
 
@@ -82,6 +83,8 @@ static constexpr std::uint32_t SCE_NGS2_CUSTOM_MAX_PORTS = 16;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_MAX_BUFFERS = 4;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_SUBMIXER_MAX_CHANNELS = 37;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_SUBMIXER_MAX_INPUTS = 2;
+static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS = 37;
+static constexpr float SCE_NGS2_CUSTOM_GAIN_MAX = 32.0f;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_REVERB_OPTION_SIZE = 12;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_PITCH_SHIFT_OPTION_SIZE = 8;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_PITCH_SHIFT_STATE_SIZE = 8;
@@ -539,6 +542,12 @@ struct Ngs2CustomVoiceUserFx2Param {
     std::size_t data_size;
 };
 static_assert(sizeof(Ngs2CustomVoiceUserFx2Param) == 24);
+
+struct Ngs2CustomVoiceGainParam {
+    Ngs2VoiceParamHeader header;
+    float gain[SCE_NGS2_CUSTOM_MODULE_MAX_CHANNELS];
+};
+static_assert(sizeof(Ngs2CustomVoiceGainParam) == 156);
 
 struct Ngs2CustomVoiceFilterParam {
     Ngs2VoiceParamHeader header;
