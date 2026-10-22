@@ -3,6 +3,19 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
+struct Asn1String {
+    std::int32_t length;
+    std::int32_t type;
+    unsigned char* data;
+    std::int64_t flags;
+};
+
+static_assert(sizeof(Asn1String) == 24);
+static_assert(offsetof(Asn1String, length) == 0);
+static_assert(offsetof(Asn1String, type) == 4);
+static_assert(offsetof(Asn1String, data) == 8);
+static_assert(offsetof(Asn1String, flags) == 16);
+
 extern "C" {
 
 APS5_DUMMY_FUN
@@ -51,14 +64,12 @@ int APS5_VABI ASN1_INTEGER_get_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI ASN1_STRING_data_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+unsigned char* APS5_VABI ASN1_STRING_data_nid_postfix(Asn1String* x) {
+    return x->data;
 }
 
-int APS5_VABI ASN1_STRING_length_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI ASN1_STRING_length_nid_postfix(const Asn1String* x) {
+    return x->length;
 }
 
 int APS5_VABI ASN1_STRING_print_nid_postfix(void) {
@@ -71,9 +82,8 @@ int APS5_VABI ASN1_STRING_to_UTF8_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI ASN1_STRING_type_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI ASN1_STRING_type_nid_postfix(Asn1String* x) {
+    return x->type;
 }
 
 int APS5_VABI ASN1_TIME_print_nid_postfix(void) {
