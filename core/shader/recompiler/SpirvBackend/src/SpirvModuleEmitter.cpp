@@ -336,12 +336,15 @@ std::uint32_t EmitAttributeValue(SpirvEmitterState& state, std::uint32_t attr, s
 }
 
 std::uint32_t EmitInterpolationParameterValue(SpirvEmitterState& state, std::uint32_t attr, std::uint32_t chan, std::uint32_t mode) {
-    if (PixelParameterIsDefault(state, attr)) {
-        return mode == 2u ? EmitAttributeValue(state, attr, chan) : ConstantU32(state, 0u);
+    if (state.inputInfo.pixel == nullptr) {
+        throw std::runtime_error("interpolation parameter refers to an undefined attribute");
+    }
+    if (attr >= state.inputInfo.pixel->inputNum || PixelParameterIsDefault(state, attr)) {
+        return mode == 2u ? ConstantU32(state, state.inputInfo.pixel->InputDefaultBits(attr, chan & 3u)) : ConstantU32(state, 0u);
     }
     const auto* input = SpirvInputBindingForParameter(state, attr);
     if (input == nullptr) {
-        throw std::runtime_error("interpolation parameter refers to an undefined attribute");
+        return mode == 2u ? ConstantU32(state, state.inputInfo.pixel->InputDefaultBits(attr, chan & 3u)) : ConstantU32(state, 0u);
     }
     if (!input->perVertex) {
         return EmitAttributeValue(state, attr, chan);
@@ -835,6 +838,20 @@ std::uint32_t TessellationPointer(SpirvValueEmitContext& ctx, const IrValue& ins
         const auto constant = sum->Argument(1)->ImmediateU32();
         const auto vertex = inPatch(EmitBinaryU32(state, spv::OpIAdd, ctx.Arg(*scaled, 0), ConstantU32(state, constant / stride)));
         state.module.AddFunction(spv::OpAccessChain, type, pointer, variable, vertex, ConstantU32(state, constant % stride / 16u), ConstantU32(state, constant % stride % 16u / 4u));
+        return pointer;
+    }
+    if (inst.Argument(1)->HasImmediate()) {
+        const auto value = inst.Argument(1)->ImmediateU32();
+        const auto offset = patch ? value : value % stride;
+        const auto attribute = ConstantU32(state, offset >> 4u);
+        const auto component = ConstantU32(state, (offset >> 2u) & 3u);
+        if (kind == TessellationAttribute::LocalOutput || patch) {
+            state.module.AddFunction(spv::OpAccessChain, type, pointer, variable, attribute, component);
+            return pointer;
+        }
+        const bool own = kind == TessellationAttribute::ControlOutput || (kind == TessellationAttribute::ControlShared && !sharedRead);
+        const auto controlPoint = kind == TessellationAttribute::ControlInput ? std::min(value / stride, state.inputInfo.vertex->tess.inputControlPoints - 1u) : kind == TessellationAttribute::EvaluationInput ? std::min(value / stride, state.inputInfo.vertex->tess.outputControlPoints - 1u) : value / stride;
+        state.module.AddFunction(spv::OpAccessChain, type, pointer, variable, own ? EmitLaneId(state) : ConstantU32(state, controlPoint), attribute, component);
         return pointer;
     }
     const auto offset = patch ? address : EmitBinaryU32(state, spv::OpUMod, address, ConstantU32(state, stride));

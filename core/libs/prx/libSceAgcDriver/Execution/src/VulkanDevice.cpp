@@ -18,7 +18,6 @@
 #include "prx/libSceAgcDriver/Execution/include/Float32FlushControl.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PipelineLinkOptimization.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DrawInputsInPlace.hpp"
-#include "prx/libSceAgcDriver/Execution/include/RobustBufferAccess.hpp"
 #include "prx/libSceAgcDriver/Execution/include/SubgroupBarrier.hpp"
 #include "prx/libSceAgcDriver/Execution/include/SubgroupClock.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderDeviceProfile.hpp"
@@ -157,20 +156,22 @@ public:
             std::lock_guard lock(mutex);
             stopping = true;
         }
-        changed.notify_one();
+        changed.notify_all();
         if (worker.joinable()) worker.join();
     }
 
     void Enqueue(int index, std::uint32_t width, std::uint32_t height, std::uint32_t scale, bool screenshot, std::vector<std::byte> pixels) {
-        std::lock_guard lock(mutex);
+        std::unique_lock lock(mutex);
         require(!stopping, "frame dump writer has stopped");
-        require(pixels.size() <= maxBytes - queuedBytes, "frame dump queue exceeded 64 MiB");
         if (!screenshot && !frameDumpOutput.Enabled_nid_no_patch()) return;
+        require(pixels.size() <= maxBytes, "a frame dump exceeds the 64 MiB queue");
+        changed.wait(lock, [&] { return stopping || pixels.size() <= maxBytes - queuedBytes; });
+        require(!stopping, "frame dump writer has stopped");
         if (!worker.joinable()) worker = std::thread([this] { run(); });
         const auto bytes = pixels.size();
         pending.push_back({index, width, height, scale, screenshot, std::move(pixels)});
         queuedBytes += bytes;
-        changed.notify_one();
+        changed.notify_all();
     }
 
     bool Idle() {
@@ -203,6 +204,7 @@ private:
                     else WriteFrameBmp(frame.index, frame.width, frame.height, frame.pixels, frame.scale);
                     std::lock_guard lock(mutex);
                     queuedBytes -= frame.pixels.size();
+                    changed.notify_all();
                 }
             }
         } catch (const std::exception& error) {
@@ -316,6 +318,7 @@ struct VulkanDevice::State {
     bool geometryShader = false;
     bool sampleRateShading = false;
     bool storageImageMultisample = false;
+    bool storageImageWriteWithoutFormat = false;
     bool shaderClipDistance = false;
     bool shaderCullDistance = false;
     bool shaderClock = false;
@@ -342,6 +345,7 @@ struct VulkanDevice::State {
     bool imageInt64Atomics = false;
     bool bufferInt64Atomics = false;
     bool viewportIndexLayer = false;
+    bool imageFormatList = false;
     bool primitiveListRestart = false;
     bool depthClipControl = false;
     bool graphicsPipelineLibrary = false;
@@ -382,6 +386,8 @@ struct VulkanDevice::State {
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
     VkSampleCountFlags mergedCoverageSampleCounts = 0;
+    VkSampleCountFlags truncatedCoverageSampleCounts = 0;
+    bool mixedAttachmentSamples = false;
     bool fragmentShaderPixelInterlock = false;
     bool conservativeRasterization = false;
     bool provokingVertexLast = false;
@@ -1313,6 +1319,10 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         state->spirvExtensions.push_back("SPV_EXT_shader_viewport_index_layer");
         state->viewportIndexLayer = true;
     }
+    if (hasExtension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME)) {
+        deviceExtensions.push_back(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+        state->imageFormatList = true;
+    }
     if (state->demoteToHelperInvocation) {
         deviceExtensions.push_back(VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME);
         state->capabilities.push_back(spv::CapabilityDemoteToHelperInvocation);
@@ -1507,12 +1517,17 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
             check(combinations(selected, &count, supported.data()), "vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV");
             for (const auto& combination : supported) {
                 if (combination.coverageReductionMode == VK_COVERAGE_REDUCTION_MODE_MERGE_NV && combination.colorSamples == VK_SAMPLE_COUNT_1_BIT && combination.depthStencilSamples == 0) state->mergedCoverageSampleCounts |= combination.rasterizationSamples;
+                if (combination.coverageReductionMode == VK_COVERAGE_REDUCTION_MODE_TRUNCATE_NV && combination.colorSamples == VK_SAMPLE_COUNT_1_BIT && combination.depthStencilSamples == combination.rasterizationSamples) state->truncatedCoverageSampleCounts |= combination.rasterizationSamples;
             }
         }
-        if (state->mergedCoverageSampleCounts != 0) {
+        if (state->mergedCoverageSampleCounts != 0 || state->truncatedCoverageSampleCounts != 0) {
             deviceExtensions.push_back(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
             deviceExtensions.push_back(VK_NV_COVERAGE_REDUCTION_MODE_EXTENSION_NAME);
         }
+    } else if (hasExtension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME)) {
+        state->mixedAttachmentSamples = true;
+        state->truncatedCoverageSampleCounts = state->properties.limits.framebufferDepthSampleCounts & state->properties.limits.framebufferColorSampleCounts & ~static_cast<VkSampleCountFlags>(VK_SAMPLE_COUNT_1_BIT);
+        deviceExtensions.push_back(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
     }
     coverageReductionFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COVERAGE_REDUCTION_MODE_FEATURES_NV};
     coverageReductionFeatures.coverageReductionMode = VK_TRUE;
@@ -1693,6 +1708,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     if (enabled.shaderStorageImageMultisample) state->capabilities.push_back(spv::CapabilityStorageImageMultisample);
     state->capabilities.push_back(spv::CapabilityImageMSArray);
     enabled.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+    state->storageImageWriteWithoutFormat = enabled.shaderStorageImageWriteWithoutFormat == VK_TRUE;
     enabled.shaderStorageImageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat;
     // Gathers with non-constant offsets (ImageGatherExtended).
     enabled.shaderImageGatherExtended = available.shaderImageGatherExtended;
@@ -1802,7 +1818,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         nonSeamlessCubeFeatures.pNext = const_cast<void*>(deviceInfo.pNext);
         deviceInfo.pNext = &nonSeamlessCubeFeatures;
     }
-    if (state->mergedCoverageSampleCounts != 0) {
+    if (!state->mixedAttachmentSamples && (state->mergedCoverageSampleCounts != 0 || state->truncatedCoverageSampleCounts != 0)) {
         coverageReductionFeatures.pNext = const_cast<void*>(deviceInfo.pNext);
         deviceInfo.pNext = &coverageReductionFeatures;
     }
@@ -1943,14 +1959,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &robustness2};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &queried);
     }
-    VkDriverId robustnessDriver = VK_DRIVER_ID_MAX_ENUM;
-    if (hasExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
-        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-        VkPhysicalDeviceProperties2 driverProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
-        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &driverProperties);
-        robustnessDriver = driver.driverID;
-    }
-    state->robustBufferAccess2 = robustness2.robustBufferAccess2 == VK_TRUE && enabled.robustBufferAccess == VK_TRUE && RobustBufferAccess2Usable(robustnessDriver);
+    state->robustBufferAccess2 = robustness2.robustBufferAccess2 == VK_TRUE && enabled.robustBufferAccess == VK_TRUE;
     if (robustness2.nullDescriptor == VK_TRUE || state->robustBufferAccess2) {
         const bool nullDescriptor = robustness2.nullDescriptor == VK_TRUE;
         robustness2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
@@ -3220,8 +3229,9 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
             static const bool noAdopt = std::getenv("APS5_NO_PRESENT_EPOCH") != nullptr;
             if (!noAdopt) GuestMemory::AdoptLatestCollectEpoch();
             GuestMemory::CollectWritesUncached(buffer.address, bytes);
-            if (!GuestMemory::UnchangedSince(buffer.address, bytes, resident->Generation()) || (buffer.dccAddress != 0 && ResidentKeysMoved(*resident))) {
-                resident->Refresh();
+            if (!GuestMemory::UnchangedSince(buffer.address, bytes, resident->GenerationFor(buffer.address, bytes)) || (buffer.dccAddress != 0 && ResidentKeysMoved(*resident))) {
+                if (resident->ImageLayers() > 1) resident->RefreshLayers(layer, 1);
+                else resident->Refresh();
                 ++refreshedPresents;
             }
             ++residentPresents;
@@ -3671,6 +3681,12 @@ std::uint32_t VulkanDevice::VendorId() const {
     return state->properties.vendorID;
 }
 
+bool VulkanDevice::SupportsImageFormat(VkFormat format, VkImageUsageFlags usage) const {
+    VkImageFormatProperties properties{};
+    const auto query = state->InstanceFunction<PFN_vkGetPhysicalDeviceImageFormatProperties>("vkGetPhysicalDeviceImageFormatProperties");
+    return query(state->physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &properties) == VK_SUCCESS;
+}
+
 ShaderRecompiler::SpirvTarget VulkanDevice::Target() const {
     require(state->shaderProfile != nullptr, "shader device profile is unavailable");
     auto target = state->shaderProfile->Target();
@@ -3805,6 +3821,8 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.samplerFilterMinmax = state->samplerFilterMinmax;
     context.nonSeamlessCubeMap = state->nonSeamlessCubeMap;
     context.mergedCoverageSampleCounts = state->mergedCoverageSampleCounts;
+    context.truncatedCoverageSampleCounts = state->truncatedCoverageSampleCounts;
+    context.mixedAttachmentSamples = state->mixedAttachmentSamples;
     context.conservativeRasterization = state->conservativeRasterization;
     context.meshWave32 = state->meshWave32;
     context.provokingVertexLast = state->provokingVertexLast;
@@ -3833,6 +3851,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.fillModeNonSolid = state->fillModeNonSolid;
     context.maintenance5 = state->maintenance5;
     context.storageImageMultisample = state->storageImageMultisample;
+    context.storageImageWriteWithoutFormat = state->storageImageWriteWithoutFormat;
     context.shaderClipDistance = state->shaderClipDistance;
     context.shaderCullDistance = state->shaderCullDistance;
     context.shaderTerminateInvocation = state->shaderTerminateInvocation;
@@ -3840,6 +3859,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.bufferInt64Atomics = state->bufferInt64Atomics;
     context.placeholderImages = state->placeholderImages.get();
     context.viewportIndexLayer = state->viewportIndexLayer;
+    context.imageFormatList = state->imageFormatList;
     context.demoteToHelperInvocation = state->demoteToHelperInvocation;
     context.earlyFragmentSampleMaskTestBeforeSampleCounting = state->earlyFragmentSampleMaskTestBeforeSampleCounting;
     context.primitiveListRestart = state->primitiveListRestart;
@@ -4401,6 +4421,7 @@ struct RecordedDispatch {
     // A template hit's revalidate time, charged to the [rescache] refresh accounting.
     double revalidateMs;
     DispatchTimer* timer;
+    std::optional<std::pair<std::uint64_t, std::size_t>> htileClear;
     // Whether the data refresh recorded anything.
     bool refreshed = false;
     bool resourceKeyMatched = false;
@@ -4661,8 +4682,8 @@ std::shared_ptr<RecipeHit> VulkanDevice::PrepareRecipe(const std::shared_ptr<con
     return hit;
 }
 
-void VulkanDevice::Dispatch(const ShaderRecompiler::RecompileResult& shader, std::uint32_t x, std::uint32_t y, std::uint32_t z, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipe) {
-    static_cast<void>(dispatch(shader, x, y, z, 0, snapshots, programAddress, std::move(prepared), recipe));
+void VulkanDevice::Dispatch(const ShaderRecompiler::RecompileResult& shader, std::uint32_t x, std::uint32_t y, std::uint32_t z, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipe, std::optional<std::pair<std::uint64_t, std::size_t>> htileClear) {
+    static_cast<void>(dispatch(shader, x, y, z, 0, snapshots, programAddress, std::move(prepared), recipe, {}, htileClear));
 }
 
 VulkanDevice::IndirectOutcome VulkanDevice::DispatchIndirect(const ShaderRecompiler::RecompileResult& shader, std::uint64_t arguments, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipe, const std::array<std::uint32_t, 3>& threadGroup) {
@@ -4745,6 +4766,14 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     auto& resources = *record.resources;
     const auto arguments = record.arguments;
     const auto* argumentImport = record.argumentImport;
+    const auto* limit = state->properties.limits.maxComputeWorkGroupCount;
+    if (argumentImport == nullptr && record.shader->program->workgroupMemoryDwords != 0 && (record.x > limit[0] || record.y > limit[1] || record.z > limit[2])) {
+        char counted[128] = "";
+        if (record.cpuArguments != 0) std::snprintf(counted, sizeof(counted), " (read on the CPU from the indirect arguments at 0x%llx, cpuReason %d)", static_cast<unsigned long long>(record.cpuArguments), record.cpuReason);
+        char text[384];
+        std::snprintf(text, sizeof(text), "Vulkan dispatch: workgroup count %ux%ux%u%s exceeds device limits %ux%ux%u and a split aliases the device-memory LDS slots, whose base is computed from gl_NumWorkGroups of a single chunk", record.x, record.y, record.z, counted, limit[0], limit[1], limit[2]);
+        throw std::runtime_error(text);
+    }
     // The record phase split (APS5_PROFILE_DRAW, rows "record: ..." of the [dispatch] totals):
     // opening the batch, the keeps, the data refresh, the barriers with the bind and the dispatch
     // itself, the pending-write notes and marks (MarkGpuWrites), and the completion registration.
@@ -4879,17 +4908,11 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     if (argumentImport != nullptr) {
         context.Resolved(&Graphics::DeviceFunctions::cmdDispatchIndirect, "vkCmdDispatchIndirect")(commands, indirectBuffer, indirectOffset);
     } else {
-        const auto* limit = state->properties.limits.maxComputeWorkGroupCount;
         if (record.x <= limit[0] && record.y <= limit[1] && record.z <= limit[2]) {
             context.Resolved(&Graphics::DeviceFunctions::cmdDispatch, "vkCmdDispatch")(commands, record.x, record.y, record.z);
         } else {
             char counted[128] = "";
             if (record.cpuArguments != 0) std::snprintf(counted, sizeof(counted), " (read on the CPU from the indirect arguments at 0x%llx, cpuReason %d)", static_cast<unsigned long long>(record.cpuArguments), record.cpuReason);
-            if (record.shader->program->workgroupMemoryDwords != 0) {
-                char text[384];
-                std::snprintf(text, sizeof(text), "Vulkan dispatch: workgroup count %ux%ux%u%s exceeds device limits %ux%ux%u and a split aliases the device-memory LDS slots, whose base is computed from gl_NumWorkGroups of a single chunk", record.x, record.y, record.z, counted, limit[0], limit[1], limit[2]);
-                throw std::runtime_error(text);
-            }
             const auto offsets = std::ranges::count_if(record.shader->program->specialization, [](const auto& constant) { return ShaderRecompiler::PipelineSpecialization::IsWorkgroupOffset(constant.id); });
             if (offsets != ShaderRecompiler::PipelineSpecialization::WorkgroupOffsetWords) {
                 char text[320];
@@ -4921,21 +4944,31 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     recorder.EndGpuTiming(trailingTiming);
     recorder.MarkCovered(dispatchedAccess);
     recordStep(PhaseRecordBind);
+    if (record.htileClear.has_value()) Graphics::ArmHtileDepthClear(record.htileClear->first, record.htileClear->second);
     resources.MarkGpuWrites(recorder);
+    if (record.htileClear.has_value()) {
+        Graphics::QueueHtileDepthClear(record.htileClear->first, record.htileClear->second);
+        recorder.NotePendingWrite(record.htileClear->first, record.htileClear->second);
+    }
     recordStep(PhaseRecordMarks);
     // Only copied written buffers (and BDA fault checks) need work once the GPU is done; without them
     // the batch can signal its labels from the GPU.
-    if (resources.NeedsCompletion() && resources.Reusable()) {
+    const bool completionNeeded = resources.NeedsCompletion() || record.htileClear.has_value();
+    if (completionNeeded && resources.Reusable()) {
         auto kept = record.resources;
-        recorder.OnComplete([kept] { kept->CheckFaults(); });
-    } else if (resources.NeedsCompletion()) {
+        recorder.OnComplete([kept, htileClear = record.htileClear] {
+            kept->CheckFaults();
+            if (htileClear.has_value()) Graphics::CompleteHtileDepthClear(htileClear->first, htileClear->second);
+        });
+    } else if (completionNeeded) {
         // Listed for DispatchIndirect until the write-back ran (a non-reusable object, so once).
         auto writers = state->copiedWriters;
         auto kept = record.resources;
-        recorder.OnComplete([kept, writers] {
+        recorder.OnComplete([kept, writers, htileClear = record.htileClear] {
             // Delisted before the write-back: one that fails must not keep indirect dispatches on the CPU.
             writers->erase(std::remove(writers->begin(), writers->end(), kept), writers->end());
             kept->WriteBackBuffers();
+            if (htileClear.has_value()) Graphics::CompleteHtileDepthClear(htileClear->first, htileClear->second);
         });
         // Listed after the registration: a throw there leaves nothing that would pin the CPU path forever.
         if (resources.HasCopiedWrites()) writers->push_back(kept);
@@ -5066,7 +5099,7 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::computePipeline(const Grap
     return finish(std::move(objects), nullptr);
 }
 
-VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::RecompileResult& shader, std::uint32_t x, std::uint32_t y, std::uint32_t z, std::uint64_t arguments, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipeOut, const std::array<std::uint32_t, 3>& threadGroup) {
+VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::RecompileResult& shader, std::uint32_t x, std::uint32_t y, std::uint32_t z, std::uint64_t arguments, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipeOut, const std::array<std::uint32_t, 3>& threadGroup, std::optional<std::pair<std::uint64_t, std::size_t>> htileClear) {
     startJournalReplay();
     for (const auto& binding : shader.bindings) {
         if (binding.role != ShaderRecompiler::DescriptorRole::GuestBuffers) continue;
@@ -5318,7 +5351,7 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
     // works; the batch is waited for where the guest expects results (labels, flips, CPU reads).
     auto& recorder = *state->recorder;
     IndirectOutcome outcome{0, 0};
-    RecordedDispatch record{&context, &shaders[0], resources, objects, pushStages, &pushBytes, x, y, z, arguments, nullptr, programAddress, fromCache && TemplateDataRefresh() ? RecordedDispatch::DataRefresh::Words : RecordedDispatch::DataRefresh::None, 0, revalidateMs, &timer};
+    RecordedDispatch record{&context, &shaders[0], resources, objects, pushStages, &pushBytes, x, y, z, arguments, nullptr, programAddress, fromCache && TemplateDataRefresh() ? RecordedDispatch::DataRefresh::Words : RecordedDispatch::DataRefresh::None, 0, revalidateMs, &timer, htileClear};
     record.resourceKeyMatched = fromCache;
     record.bindings = overlay;
     record.threadGroup = threadGroup;

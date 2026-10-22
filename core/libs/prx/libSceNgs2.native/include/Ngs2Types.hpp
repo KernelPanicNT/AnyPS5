@@ -15,6 +15,8 @@ static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_INDEX = static_cast<int>(0x804
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA = static_cast<int>(0x804A8430);
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT = static_cast<int>(0x804A8431);
 static constexpr int SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT = static_cast<int>(0x804A8432);
+static constexpr int SCE_NGS2_ERROR_INVALID_PAN_UNIT_ANGLE = static_cast<int>(0x804A8450);
+static constexpr int SCE_NGS2_ERROR_INVALID_PAN_SPEAKER = static_cast<int>(0x804A8451);
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int>(0x804A8203);
 static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST = static_cast<int>(0x804A8360);
 static constexpr int SCE_NGS2_ERROR_INVALID_OPTION_SIZE = static_cast<int>(0x804A8013);
@@ -24,6 +26,8 @@ static constexpr int SCE_NGS2_ERROR_INVALID_REVERB_OPTION = static_cast<int>(0x8
 static constexpr int SCE_NGS2_ERROR_INVALID_STATE_SIZE = static_cast<int>(0x804A8302);
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_INDEX = static_cast<int>(0x804A8306);
 static constexpr int SCE_NGS2_ERROR_INVALID_NUM_BUFFERS = static_cast<int>(0x804A830B);
+static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_LISTENER_ADDRESS = static_cast<int>(0x804A8461);
+static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_FLAG = static_cast<int>(0x804A8463);
 
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SAMPLER = 0x1000;
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SUBMIXER = 0x2000;
