@@ -1,0 +1,16 @@
+add_library(libSceLibreSsl3 SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp)
+target_include_directories(libSceLibreSsl3 PRIVATE ${LIBS_INCLUDE_DIR})
+configure_windows_unwind(libSceLibreSsl3)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_libressl3_asn1_string_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Asn1String.cpp)
+    target_include_directories(guest_libressl3_asn1_string_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_asn1_string_tests PRIVATE libSceLibreSsl3 libc)
+    configure_windows_unwind(guest_libressl3_asn1_string_tests)
+    add_test(NAME guest_libressl3_asn1_string COMMAND guest_libressl3_asn1_string_tests)
+    set_tests_properties(guest_libressl3_asn1_string PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_asn1_string PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+endif()

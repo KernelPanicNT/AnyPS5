@@ -3,6 +3,19 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
+struct Asn1String {
+    std::int32_t length;
+    std::int32_t type;
+    unsigned char* data;
+    std::int64_t flags;
+};
+
+static_assert(sizeof(Asn1String) == 24);
+static_assert(offsetof(Asn1String, length) == 0);
+static_assert(offsetof(Asn1String, type) == 4);
+static_assert(offsetof(Asn1String, data) == 8);
+static_assert(offsetof(Asn1String, flags) == 16);
+
 extern "C" {
 
 APS5_DUMMY_FUN
@@ -16,9 +29,8 @@ int APS5_VABI ASN1_OBJECT_free_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI ASN1_STRING_get0_data_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+const unsigned char* APS5_VABI ASN1_STRING_get0_data_nid_postfix(const Asn1String* astr) {
+    return astr->data;
 }
 
 int APS5_VABI BIO_up_ref_nid_postfix(void) {
