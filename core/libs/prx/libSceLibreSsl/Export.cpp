@@ -3,6 +3,22 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
+struct Asn1String {
+    std::int32_t length;
+    std::int32_t type;
+    unsigned char* data;
+    std::int64_t flags;
+};
+
+static_assert(sizeof(Asn1String) == 24);
+static_assert(offsetof(Asn1String, length) == 0);
+static_assert(offsetof(Asn1String, type) == 4);
+static_assert(offsetof(Asn1String, data) == 8);
+static_assert(offsetof(Asn1String, flags) == 16);
+
+constexpr std::int32_t Asn1Integer = 2;
+constexpr std::int32_t Asn1NegInteger = 0x102;
+
 extern "C" {
 
 APS5_DUMMY_FUN
@@ -46,9 +62,22 @@ int APS5_VABI AES_set_encrypt_key_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI ASN1_INTEGER_get_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int64_t APS5_VABI ASN1_INTEGER_get_nid_postfix(const Asn1String* a) {
+    if (a == nullptr) return 0;
+    bool negative = false;
+    if (a->type == Asn1NegInteger) {
+        negative = true;
+    } else if (a->type != Asn1Integer) {
+        return -1;
+    }
+    if (a->length > static_cast<std::int32_t>(sizeof(std::int64_t))) return -1;
+    if (a->data == nullptr) return 0;
+    std::uint64_t value = 0;
+    for (std::int32_t i = 0; i < a->length; i++) {
+        value = (value << 8) | a->data[i];
+    }
+    if (negative) value = 0 - value;
+    return static_cast<std::int64_t>(value);
 }
 
 int APS5_VABI ASN1_STRING_data_nid_postfix(void) {
