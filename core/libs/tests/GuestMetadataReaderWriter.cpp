@@ -78,12 +78,17 @@ static Metadata Filled() {
     return metadata;
 }
 
+using Destructor = void (APS5_VABI*)(Metadata*);
+
+static Destructor Slot(const Metadata& metadata, std::size_t index) {
+    return reinterpret_cast<Destructor>(const_cast<void*>(metadata.vtable[index]));
+}
+
 static void RequireInitial(const Metadata& metadata) {
     Require(metadata.vtable != nullptr);
     Require(metadata.vtable[-2] == nullptr);
     Require(metadata.vtable[-1] == nullptr);
-    Require(metadata.vtable[0] == reinterpret_cast<const void*>(&_ZN23sceMetadataReaderWriter8MetadataD1Ev));
-    Require(metadata.vtable[1] == reinterpret_cast<const void*>(&_ZN23sceMetadataReaderWriter8MetadataD0Ev));
+    Require(metadata.vtable[0] != nullptr && metadata.vtable[1] != nullptr && metadata.vtable[0] != metadata.vtable[1]);
     Require(metadata.marker == -1);
     Require(metadata.reserved == 0);
     Require(metadata.fields == nullptr);
@@ -148,6 +153,15 @@ static void TestConstruction() {
     _ZN23sceMetadataReaderWriter8MetadataC1EPFPvmEPFvS1_E(heap, TestAllocate, TestRelease);
     _ZN23sceMetadataReaderWriter8MetadataD0Ev(heap);
     Require(g_heapReleased == heap && g_heapAllocations == 1);
+
+    Slot(destroyed, 0)(&destroyed);
+    Require(std::memcmp(&destroyed, &custom, sizeof(destroyed)) == 0);
+    g_heapReleased = nullptr;
+    heap = static_cast<Metadata*>(_Znwm_nid_postfix(sizeof(Metadata)));
+    Require(heap == reinterpret_cast<Metadata*>(g_heapStorage.data()) && g_heapAllocations == 2);
+    _ZN23sceMetadataReaderWriter8MetadataC1EPFPvmEPFvS1_E(heap, TestAllocate, TestRelease);
+    Slot(*heap, 1)(heap);
+    Require(g_heapReleased == heap && g_heapAllocations == 2);
 }
 
 static void TestUnsupportedAndNull() {
@@ -164,6 +178,8 @@ static void TestUnsupportedAndNull() {
     RequireThrows<std::runtime_error>([&] { _ZN23sceMetadataReaderWriter8MetadataaSERKS0_(&metadata, &stored); });
     RequireThrows<std::runtime_error>([&] { _ZN23sceMetadataReaderWriter8MetadataaSERKS0_(&stored, &metadata); });
     RequireThrows<std::runtime_error>([&] { _ZN23sceMetadataReaderWriter8MetadataD1Ev(&stored); });
+    RequireThrows<std::runtime_error>([&] { Slot(stored, 0)(&stored); });
+    RequireThrows<std::runtime_error>([&] { Slot(stored, 1)(&stored); });
 
     RequireThrows<std::invalid_argument>([] { _ZN23sceMetadataReaderWriter8MetadataC1Ev(nullptr); });
     RequireThrows<std::invalid_argument>([] { _ZN23sceMetadataReaderWriter8MetadataC2EPFPvmEPFvS1_E(nullptr, nullptr, nullptr); });
