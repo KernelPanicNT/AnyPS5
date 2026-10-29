@@ -155,47 +155,12 @@ int APS5_VABI ksem_close_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI ksem_destroy_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ksem_getvalue_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ksem_init_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI ksem_open_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI ksem_post_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ksem_timedwait_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ksem_trywait_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI ksem_unlink_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ksem_wait_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -2121,11 +2086,6 @@ int APS5_VABI sched_setscheduler_nid_postfix(int pid, int policy, const KernelSc
     if (policy != 1 && policy != 2 && policy != 3) return fail(22);
     if (scePthreadSetschedparam(scePthreadSelf(), policy, param) != 0)
         NotImplemented_nid_no_patch("sched_setscheduler: a policy and priority scePthreadSetschedparam does not accept, where FreeBSD answers EPERM or EINVAL and the console's answer is unverified");
-    return 0;
-}
-
-int APS5_VABI sem_setname_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
