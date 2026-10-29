@@ -140,7 +140,9 @@ static void TestConstruction() {
     target = first;
     Require(_ZN23sceMetadataReaderWriter8MetadataaSERKS0_(&target, &custom) == &target);
     Require(std::memcmp(&target, &first, sizeof(target)) == 0);
+    Metadata before = target;
     Require(_ZN23sceMetadataReaderWriter8MetadataaSERKS0_(&target, &target) == &target);
+    Require(std::memcmp(&target, &before, sizeof(target)) == 0);
 
     Metadata destroyed = custom;
     _ZN23sceMetadataReaderWriter8MetadataD1Ev(&destroyed);
@@ -193,26 +195,41 @@ static void TestUnsupportedAndNull() {
     RequireThrows<std::invalid_argument>([] { _ZN23sceMetadataReaderWriter8MetadataD0Ev(nullptr); });
 }
 
+struct PaddedValue {
+    Value value;
+    std::uint64_t tail;
+};
+
+static PaddedValue Pattern(std::int32_t type) {
+    PaddedValue destination;
+    std::memset(&destination, 0x55, sizeof(destination));
+    destination.value.type = type;
+    return destination;
+}
+
+static void RequireAssigned(std::int32_t type, bool keepsSecond) {
+    Value source{type, 0xA1A2A3A4u, 0x1111111111111111ull, 0x2222222222222222ull};
+    PaddedValue target = Pattern(0x55555555);
+    Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&target.value, &source) == &target.value);
+    Require(target.value.type == type && target.value.padding == 0x55555555u && target.value.first == 0x1111111111111111ull);
+    Require(target.value.second == (keepsSecond ? 0x5555555555555555ull : 0x2222222222222222ull));
+    Require(target.tail == 0x5555555555555555ull);
+    Require(source.type == type && source.padding == 0xA1A2A3A4u && source.first == 0x1111111111111111ull && source.second == 0x2222222222222222ull);
+}
+
+static void RequireSelfAssigned(std::int32_t type) {
+    PaddedValue self = Pattern(type);
+    PaddedValue before = self;
+    Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&self.value, &self.value) == &self.value);
+    Require(std::memcmp(&self, &before, sizeof(self)) == 0);
+}
+
 static void TestValueAssignment() {
-    for (std::int32_t type = 0; type <= 3; ++type) {
-        Value source{type, type == 0 ? 9u : 0u, 2, 3};
-        Value target{};
-        Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&target, &source) == &target);
-        Require(target.type == type && target.padding == 0 && target.first == 2 && target.second == 3);
-        Require(source.type == type && source.first == 2 && source.second == 3);
-    }
-    for (std::int32_t type : {4, 17, 255, 0x7FFFFFFF, -1, static_cast<std::int32_t>(0x80000000)}) {
-        Value source{type, 0, 2, 3};
-        Value target{};
-        Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&target, &source) == &target);
-        Require(target.type == type && target.first == 2);
-    }
-    Value invalid{-1, 0xFFFFFFFF, 2, 3};
-    Value source{};
-    Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&invalid, &source) == &invalid);
-    Require(invalid.type == 0 && invalid.padding == 0xFFFFFFFF && invalid.first == 0 && invalid.second == 0);
+    for (std::int32_t type = 0; type <= 3; ++type) RequireAssigned(type, false);
+    for (std::int32_t type : {4, 17, 255, 0x7FFFFFFF, -1, static_cast<std::int32_t>(0x80000000)}) RequireAssigned(type, true);
+    RequireSelfAssigned(2);
+    RequireSelfAssigned(17);
     Value self{2, 0, 5, 6};
-    Require(_ZN23sceMetadataReaderWriter5ValueaSERS0_(&self, &self) == &self);
     RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter5ValueaSERS0_(nullptr, &self); });
     RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter5ValueaSERS0_(&self, nullptr); });
 }
