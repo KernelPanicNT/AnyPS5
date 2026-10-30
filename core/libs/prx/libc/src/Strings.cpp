@@ -798,17 +798,18 @@ size_t APS5_VABI wcscspn_nid_postfix(const char16_t* s, const char16_t* reject) 
 }
 
 char16_t* APS5_VABI wcstok_nid_postfix(char16_t* text, const char16_t* delimiters, char16_t** last) {
+    static const char16_t exhausted[] = u"";
     if (text == nullptr) text = *last;
     if (text == nullptr) return nullptr;
     while (*text != 0 && Contains(delimiters, *text)) ++text;
     if (*text == 0) {
-        *last = nullptr;
+        *last = const_cast<char16_t*>(exhausted);
         return nullptr;
     }
     char16_t* end = text;
     while (*end != 0 && !Contains(delimiters, *end)) ++end;
     if (*end == 0) {
-        *last = nullptr;
+        *last = end;
     } else {
         *end = 0;
         *last = end + 1;
@@ -830,8 +831,10 @@ float APS5_VABI wcstof_nid_postfix(const char16_t* str, char16_t** endptr) {
 }
 
 long double APS5_VABI wcstold_nid_postfix(const char16_t* str, char16_t** endptr) {
+#ifndef __EMSCRIPTEN__
     static_assert(sizeof(long double) == 16);
     static_assert(std::numeric_limits<long double>::digits == 64);
+#endif
     return ParseAsciiPrefix(str, endptr, [](const char* text, char** end) { return ParseFloat<long double>(text, end, std::strtold); });
 }
 
