@@ -1,4 +1,5 @@
 #include "prx/libSceMetadataReaderWriter/include/Api.hpp"
+#include "prx/libSceJson2/include/Api.hpp"
 #include "prx/libc/include/Api.hpp"
 #include <array>
 #include <cstddef>
@@ -6,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include "ProcessParametersFixture.hpp"
 
 using SceMetadataReaderWriter::Metadata;
@@ -234,10 +236,197 @@ static void TestValueAssignment() {
     RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter5ValueaSERS0_(&self, nullptr); });
 }
 
+static const char* const g_serializedConstructed =
+    "{\"field_list\":[],\"mimeType\":4294967295,\"mimeTypeFormatVersion\":0,\"parserId\":4294967295,\"promoterFormatVersion\":0}";
+
+static std::string JsonText(SceJson2::Value* value) {
+    SceJson2::String text{};
+    _ZN3sce4Json6StringC1Ev(&text);
+    Require(_ZN3sce4Json5Value9serializeERNS0_6StringE(value, &text) == 0);
+    std::string result(_ZNK3sce4Json6String5c_strEv(&text));
+    _ZN3sce4Json6StringD1Ev(&text);
+    return result;
+}
+
+static Metadata Constructed() {
+    Metadata metadata;
+    _ZN23sceMetadataReaderWriter8MetadataC1Ev(&metadata);
+    return metadata;
+}
+
+static void RequireSerializesConstructed(Metadata& metadata, SceJson2::Value& destination) {
+    const Metadata before = metadata;
+    Require(_ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(&metadata, &destination) == 0);
+    Require(std::memcmp(&metadata, &before, sizeof(metadata)) == 0);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&destination) == SceJson2::TypeObject);
+    Require(_ZNK3sce4Json5Value5countEv(&destination) == 5);
+    Require(JsonText(&destination) == g_serializedConstructed);
+}
+
+static void RequireSerializeRejects(Metadata& metadata, SceJson2::Value& destination) {
+    const Metadata before = metadata;
+    const std::string text = JsonText(&destination);
+    RequireThrows<std::runtime_error>([&] { _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(&metadata, &destination); });
+    Require(std::memcmp(&metadata, &before, sizeof(metadata)) == 0);
+    Require(JsonText(&destination) == text);
+}
+
+static void TestSerialize() {
+    Metadata metadata = Constructed();
+    Metadata custom;
+    _ZN23sceMetadataReaderWriter8MetadataC1EPFPvmEPFvS1_E(&custom, TestAllocate, TestRelease);
+    SceJson2::Value null{};
+    _ZN3sce4Json5ValueC1Ev(&null);
+    SceJson2::Value object{};
+    _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&object, SceJson2::TypeObject);
+    SceJson2::Value integer{};
+    _ZN3sce4Json5ValueC1El(&integer, 7);
+    SceJson2::Value text{};
+    _ZN3sce4Json5ValueC1EPKc(&text, "ab");
+    SceJson2::Value fresh{};
+    _ZN3sce4Json5ValueC1Ev(&fresh);
+    for (SceJson2::Value* destination : {&null, &object, &integer, &text}) RequireSerializesConstructed(metadata, *destination);
+    RequireSerializesConstructed(metadata, null);
+    RequireSerializesConstructed(custom, fresh);
+
+    SceJson2::Value boolean{};
+    _ZN3sce4Json5ValueC1Eb(&boolean, true);
+    SceJson2::Value unsignedInteger{};
+    _ZN3sce4Json5ValueC1Em(&unsignedInteger, 7);
+    SceJson2::Value real{};
+    _ZN3sce4Json5ValueC1Ed(&real, 1.5);
+    SceJson2::Value array{};
+    _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&array, SceJson2::TypeArray);
+    for (SceJson2::Value* destination : {&boolean, &unsignedInteger, &real, &array}) RequireSerializeRejects(metadata, *destination);
+
+    Metadata deserialized = Constructed();
+    deserialized.marker = 0;
+    RequireSerializeRejects(deserialized, fresh);
+    Metadata reserved = Constructed();
+    reserved.reserved = 1;
+    RequireSerializeRejects(reserved, fresh);
+    Metadata stored = Constructed();
+    int storage = 0;
+    stored.fields = &storage;
+    RequireSerializeRejects(stored, fresh);
+
+    RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(nullptr, &fresh); });
+    RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(&metadata, nullptr); });
+
+    for (SceJson2::Value* value : {&null, &object, &integer, &text, &fresh, &boolean, &unsignedInteger, &real, &array}) _ZN3sce4Json5ValueD1Ev(value);
+}
+
+static void RequireDeserializes(Metadata metadata, SceJson2::Value& source, std::int64_t marker) {
+    Metadata expected = metadata;
+    expected.marker = marker;
+    const std::string text = JsonText(&source);
+    Require(_ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(&source, &metadata) == 0);
+    Require(std::memcmp(&metadata, &expected, sizeof(metadata)) == 0);
+    Require(JsonText(&source) == text);
+    Require(_ZNK23sceMetadataReaderWriter8Metadata13getFieldCountEv(&metadata) == 0);
+}
+
+static void RequireDeserializeRejects(Metadata metadata, SceJson2::Value& source) {
+    const Metadata before = metadata;
+    const std::string text = JsonText(&source);
+    RequireThrows<std::runtime_error>([&] { _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(&source, &metadata); });
+    Require(std::memcmp(&metadata, &before, sizeof(metadata)) == 0);
+    Require(JsonText(&source) == text);
+}
+
+static SceJson2::Value* Member(SceJson2::Value& object, const char* key) {
+    SceJson2::String name{};
+    _ZN3sce4Json6StringC1EPKc(&name, key);
+    SceJson2::Value* member = _ZN3sce4Json6ObjectixERKNS0_6StringE(_ZN3sce4Json5Value11referObjectEv(&object), &name);
+    _ZN3sce4Json6StringD1Ev(&name);
+    return member;
+}
+
+static void TestDeserialize() {
+    Metadata metadata = Constructed();
+    Metadata custom;
+    _ZN23sceMetadataReaderWriter8MetadataC1EPFPvmEPFvS1_E(&custom, TestAllocate, TestRelease);
+    SceJson2::Value serialized{};
+    _ZN3sce4Json5ValueC1Ev(&serialized);
+    Require(_ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(&metadata, &serialized) == 0);
+    RequireDeserializes(metadata, serialized, -1);
+    RequireDeserializes(custom, serialized, -1);
+
+    SceJson2::Value object{};
+    _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&object, SceJson2::TypeObject);
+    SceJson2::Value null{};
+    _ZN3sce4Json5ValueC1Ev(&null);
+    SceJson2::Value seven{};
+    _ZN3sce4Json5ValueC1El(&seven, 7);
+    SceJson2::Value zero{};
+    _ZN3sce4Json5ValueC1El(&zero, 0);
+    SceJson2::Value text{};
+    _ZN3sce4Json5ValueC1EPKc(&text, "ab");
+    SceJson2::Value empty{};
+    _ZN3sce4Json5ValueC1EPKc(&empty, "");
+    for (SceJson2::Value* source : {&object, &null, &seven, &zero, &text, &empty}) {
+        RequireDeserializes(metadata, *source, 0);
+        RequireDeserializes(custom, *source, 0);
+    }
+
+    Metadata deserialized = metadata;
+    Require(_ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(&null, &deserialized) == 0);
+    RequireDeserializeRejects(deserialized, null);
+    RequireDeserializeRejects(deserialized, serialized);
+    Metadata reserved = metadata;
+    reserved.reserved = 1;
+    RequireDeserializeRejects(reserved, null);
+    Metadata stored = metadata;
+    int storage = 0;
+    stored.fields = &storage;
+    RequireDeserializeRejects(stored, null);
+
+    SceJson2::Value boolean{};
+    _ZN3sce4Json5ValueC1Eb(&boolean, false);
+    SceJson2::Value unsignedInteger{};
+    _ZN3sce4Json5ValueC1Em(&unsignedInteger, 0);
+    SceJson2::Value real{};
+    _ZN3sce4Json5ValueC1Ed(&real, 0);
+    SceJson2::Value array{};
+    _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&array, SceJson2::TypeArray);
+    SceJson2::Value other{};
+    _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&other, SceJson2::TypeObject);
+    _ZN3sce4Json5Value3setEl(Member(other, "a"), 1);
+    SceJson2::Value changedIdentifier{};
+    _ZN3sce4Json5ValueC1ERKS1_(&changedIdentifier, &serialized);
+    _ZN3sce4Json5Value3setEl(Member(changedIdentifier, "parserId"), 5);
+    SceJson2::Value unsignedIdentifier{};
+    _ZN3sce4Json5ValueC1ERKS1_(&unsignedIdentifier, &serialized);
+    _ZN3sce4Json5Value3setEm(Member(unsignedIdentifier, "mimeType"), 0xFFFFFFFFu);
+    SceJson2::Value extraMember{};
+    _ZN3sce4Json5ValueC1ERKS1_(&extraMember, &serialized);
+    _ZN3sce4Json5Value3setEl(Member(extraMember, "title"), 0);
+    SceJson2::Value missingMember{};
+    _ZN3sce4Json5ValueC1ERKS1_(&missingMember, &serialized);
+    SceJson2::String promoter{};
+    _ZN3sce4Json6StringC1EPKc(&promoter, "promoterFormatVersion");
+    _ZN3sce4Json6Object5eraseERKNS0_6StringE(_ZN3sce4Json5Value11referObjectEv(&missingMember), &promoter);
+    _ZN3sce4Json6StringD1Ev(&promoter);
+    SceJson2::Value filledList{};
+    _ZN3sce4Json5ValueC1ERKS1_(&filledList, &serialized);
+    _ZN3sce4Json5Array9push_backERKNS0_5ValueE(_ZN3sce4Json5Value10referArrayEv(Member(filledList, "field_list")), &zero);
+    for (SceJson2::Value* source : {&boolean, &unsignedInteger, &real, &array, &other, &changedIdentifier, &unsignedIdentifier, &extraMember, &missingMember, &filledList})
+        RequireDeserializeRejects(metadata, *source);
+
+    RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(nullptr, &metadata); });
+    RequireThrows<std::invalid_argument>([&] { _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(&null, nullptr); });
+
+    for (SceJson2::Value* value : {&serialized, &object, &null, &seven, &zero, &text, &empty, &boolean, &unsignedInteger, &real, &array, &other,
+             &changedIdentifier, &unsignedIdentifier, &extraMember, &missingMember, &filledList})
+        _ZN3sce4Json5ValueD1Ev(value);
+}
+
 int main() {
     InstallHeap();
     TestConstruction();
     TestUnsupportedAndNull();
     TestValueAssignment();
+    TestSerialize();
+    TestDeserialize();
     return 0;
 }

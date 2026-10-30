@@ -4,6 +4,12 @@
 #include <cstdint>
 #include "SceTypes.hpp"
 
+namespace SceJson2 {
+
+struct Value;
+
+}
+
 namespace SceMetadataReaderWriter {
 
 using Allocate = void* (APS5_VABI*)(std::size_t);
@@ -47,13 +53,13 @@ int APS5_VABI _ZN23sceMetadataReaderWriter18registerParserInfoERKSt6vectorINS_10
 int APS5_VABI _ZN23sceMetadataReaderWriter20unregisterParserInfoEv(void);
 int APS5_VABI _ZN23sceMetadataReaderWriter23registerParserInterfaceEjRKNS_15ParserInterfaceE(void);
 SceMetadataReaderWriter::Value* APS5_VABI _ZN23sceMetadataReaderWriter5ValueaSERS0_(SceMetadataReaderWriter::Value* self, SceMetadataReaderWriter::Value* other);
-int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(void);
+int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(SceJson2::Value* value, SceMetadataReaderWriter::Metadata* metadata);
 int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata11deleteFieldERKSs(void);
 int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata15iterateAllFieldEPFiRKSsRKNS_5ValueEbE(void);
 int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata8getFieldEiRSsRNS_5ValueERb(void);
 int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata8setFieldERKSs(void);
 int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata8setFieldERKSsRKNS_5ValueE(void);
-int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(void);
+int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(SceMetadataReaderWriter::Metadata* metadata, SceJson2::Value* value);
 void APS5_VABI _ZN23sceMetadataReaderWriter8MetadataC1EPFPvmEPFvS1_E(SceMetadataReaderWriter::Metadata* self, SceMetadataReaderWriter::Allocate allocate, SceMetadataReaderWriter::Release release);
 void APS5_VABI _ZN23sceMetadataReaderWriter8MetadataC1ERKS0_(SceMetadataReaderWriter::Metadata* self, const SceMetadataReaderWriter::Metadata* other);
 void APS5_VABI _ZN23sceMetadataReaderWriter8MetadataC1ERKS0_PFPvmEPFvS3_E(SceMetadataReaderWriter::Metadata* self, const SceMetadataReaderWriter::Metadata* other, SceMetadataReaderWriter::Allocate allocate, SceMetadataReaderWriter::Release release);

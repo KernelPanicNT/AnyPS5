@@ -1,9 +1,11 @@
 #include "prx/libSceMetadataReaderWriter/include/Api.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include "SceTypes.hpp"
+#include "prx/libSceJson2/include/Api.hpp"
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -13,7 +15,22 @@ using SceMetadataReaderWriter::Metadata;
 using SceMetadataReaderWriter::Value;
 
 constexpr std::int64_t InitialMarker = -1;
+constexpr std::int64_t DeserializedMarker = 0;
 constexpr std::int32_t LastValueType = 3;
+constexpr std::int64_t SerializedUnsetIdentifier = 0xFFFFFFFF;
+constexpr const char* FieldListKey = "field_list";
+
+struct SerializedInteger {
+    const char* key;
+    std::int64_t value;
+};
+
+constexpr SerializedInteger g_serializedIntegers[] {
+    {"mimeType", SerializedUnsetIdentifier},
+    {"mimeTypeFormatVersion", 0},
+    {"parserId", SerializedUnsetIdentifier},
+    {"promoterFormatVersion", 0},
+};
 
 void* APS5_VABI DefaultAllocate(std::size_t) {
     NotImplemented_nid_no_patch("Metadata default allocator");
@@ -45,6 +62,86 @@ void RequireObject(const void* object, const char* function) {
 
 void RequireNoFields(const Metadata* metadata, const char* function) {
     if (metadata->fields != nullptr) throw std::runtime_error(std::string(function) + ": metadata with field storage is not supported");
+}
+
+void RequireConstructedState(const Metadata* metadata, const char* function) {
+    RequireNoFields(metadata, function);
+    if (metadata->marker != InitialMarker || metadata->reserved != 0)
+        throw std::runtime_error(std::string(function) + ": metadata that is not in its constructed state is not supported");
+}
+
+class JsonString {
+public:
+    explicit JsonString(const char* text) { _ZN3sce4Json6StringC1EPKc(&string, text); }
+    ~JsonString() { _ZN3sce4Json6StringD1Ev(&string); }
+    JsonString(const JsonString&) = delete;
+    JsonString& operator=(const JsonString&) = delete;
+    const SceJson2::String* Get() const { return &string; }
+
+private:
+    SceJson2::String string{};
+};
+
+class JsonValue {
+public:
+    explicit JsonValue(SceJson2::ValueType type) { _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(&value, type); }
+    ~JsonValue() { _ZN3sce4Json5ValueD1Ev(&value); }
+    JsonValue(const JsonValue&) = delete;
+    JsonValue& operator=(const JsonValue&) = delete;
+    SceJson2::Value* Get() { return &value; }
+
+private:
+    SceJson2::Value value{};
+};
+
+SceJson2::Value* Entry(SceJson2::Object* object, const char* key) {
+    const JsonString name(key);
+    return _ZN3sce4Json6ObjectixERKNS0_6StringE(object, name.Get());
+}
+
+SceJson2::Value* Member(SceJson2::Value* object, const char* key) {
+    const JsonString name(key);
+    return _ZN3sce4Json5Value10referValueERKNS0_6StringE(object, name.Get());
+}
+
+void RequireReplaceable(const SceJson2::Value* value) {
+    switch (_ZNK3sce4Json5Value7getTypeEv(value)) {
+        case SceJson2::TypeNull:
+        case SceJson2::TypeInteger:
+        case SceJson2::TypeString:
+        case SceJson2::TypeObject:
+            return;
+        default:
+            throw std::runtime_error("Metadata::Serialize: a destination value of this type is not supported");
+    }
+}
+
+bool HasSerializedConstructedFields(SceJson2::Value* value) {
+    if (_ZNK3sce4Json5Value5countEv(value) != std::size(g_serializedIntegers) + 1) return false;
+    SceJson2::Value* fieldList = Member(value, FieldListKey);
+    if (fieldList == nullptr || _ZNK3sce4Json5Value7getTypeEv(fieldList) != SceJson2::TypeArray || _ZNK3sce4Json5Value5countEv(fieldList) != 0) return false;
+    for (const auto& field : g_serializedIntegers) {
+        SceJson2::Value* member = Member(value, field.key);
+        if (member == nullptr || _ZNK3sce4Json5Value7getTypeEv(member) != SceJson2::TypeInteger) return false;
+        if (*_ZNK3sce4Json5Value10getIntegerEv(member) != field.value) return false;
+    }
+    return true;
+}
+
+bool IsSerializedConstructedState(SceJson2::Value* value) {
+    switch (_ZNK3sce4Json5Value7getTypeEv(value)) {
+        case SceJson2::TypeNull:
+        case SceJson2::TypeInteger:
+        case SceJson2::TypeString:
+            return false;
+        case SceJson2::TypeObject:
+            break;
+        default:
+            throw std::runtime_error("Metadata::Deserialize: a value of this type is not supported");
+    }
+    if (_ZNK3sce4Json5Value5countEv(value) == 0) return false;
+    if (HasSerializedConstructedFields(value)) return true;
+    throw std::runtime_error("Metadata::Deserialize: an object other than the serialized constructed state is not supported");
 }
 
 void Construct(Metadata* self, SceMetadataReaderWriter::Allocate allocate, SceMetadataReaderWriter::Release release, const char* function) {
@@ -155,8 +252,11 @@ SceMetadataReaderWriter::Value* APS5_VABI _ZN23sceMetadataReaderWriter5ValueaSER
     return self;
 }
 
-int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata11DeserializeERN3sce4Json5ValueERS0_(SceJson2::Value* value, SceMetadataReaderWriter::Metadata* metadata) {
+    RequireObject(value, "Metadata::Deserialize");
+    RequireObject(metadata, "Metadata::Deserialize");
+    RequireConstructedState(metadata, "Metadata::Deserialize");
+    metadata->marker = IsSerializedConstructedState(value) ? InitialMarker : DeserializedMarker;
     return 0;
 }
 
@@ -185,8 +285,16 @@ int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata8setFieldERKSsRKNS_5ValueE() 
     return 0;
 }
 
-int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN23sceMetadataReaderWriter8Metadata9SerializeERS0_RN3sce4Json5ValueE(SceMetadataReaderWriter::Metadata* metadata, SceJson2::Value* value) {
+    RequireObject(metadata, "Metadata::Serialize");
+    RequireObject(value, "Metadata::Serialize");
+    RequireConstructedState(metadata, "Metadata::Serialize");
+    RequireReplaceable(value);
+    JsonValue serialized(SceJson2::TypeObject);
+    SceJson2::Object* object = _ZN3sce4Json5Value11referObjectEv(serialized.Get());
+    _ZN3sce4Json5Value3setENS0_9ValueTypeE(Entry(object, FieldListKey), SceJson2::TypeArray);
+    for (const auto& field : g_serializedIntegers) _ZN3sce4Json5Value3setEl(Entry(object, field.key), field.value);
+    _ZN3sce4Json5ValueaSERKS1_(value, serialized.Get());
     return 0;
 }
 
